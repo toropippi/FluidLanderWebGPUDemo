@@ -597,6 +597,37 @@ export class FluidGpuSimulation {
     }
   }
 
+  destroy() {
+    this.cellBuffer?.destroy?.();
+    this.shapeBuffer?.destroy?.();
+    this.ufoeBuffer?.destroy?.();
+    this.objectInfoBuffer?.destroy?.();
+    this.readbackBuffer?.destroy?.();
+    this.cellReadbackBuffer?.destroy?.();
+    this.particleBuffer?.destroy?.();
+    this.particleReadbackBuffer?.destroy?.();
+    this.emitterBuffer?.destroy?.();
+    this.simBuffer?.destroy?.();
+    this.ufoObjectBuffer?.destroy?.();
+    this.nozzleObjectBuffer?.destroy?.();
+    this.particleParamBuffer?.destroy?.();
+    for (const buffer of this.velocitySnapshotBuffers ?? []) {
+      buffer?.destroy?.();
+    }
+    for (const buffer of this.velocitySnapshotReadbackBuffers ?? []) {
+      buffer?.destroy?.();
+    }
+    for (const buffer of this.moveObjectBuffers ?? []) {
+      buffer?.destroy?.();
+    }
+    this.velocitySnapshotBuffers = [];
+    this.velocitySnapshotReadbackBuffers = [];
+    this.moveObjectBuffers = [];
+    this.moveObjectBindGroups = [];
+    this.velocitySnapshotCount = 0;
+    this.velocitySnapshotsPerBuffer = 0;
+  }
+
   makeBindGroup(objectBuffer) {
     return this.device.createBindGroup({
       layout: this.bindGroupLayout,
