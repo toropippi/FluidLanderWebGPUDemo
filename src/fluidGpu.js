@@ -8,6 +8,7 @@ const UNITY_DEFAULT_PARTICLE_COUNT = 262144;
 const UNITY_STAGE_PARTICLES_PER_GAME_FRAME = 192;
 const UNITY_NOZZLE_PARTICLES_PER_GAME_FRAME = 768;
 const STRIDE = 34;
+const CELL_BYTE_LENGTH = CELL_COUNT * STRIDE * 4;
 const OFF = {
   YU: 0,
   YUN: 1,
@@ -66,6 +67,115 @@ function colorForStage(stage, x, y, fallback) {
     }
   }
   return color;
+}
+
+function makeVelocityStats(name = "all") {
+  return {
+    name,
+    samples: 0,
+    fluidU: 0,
+    fluidV: 0,
+    energy: 0,
+    maxAbsU: { value: 0, x: 0, y: 0 },
+    maxAbsV: { value: 0, x: 0, y: 0 },
+    maxAbsGXU: { value: 0, x: 0, y: 0 },
+    maxAbsGYU: { value: 0, x: 0, y: 0 },
+    maxAbsGXV: { value: 0, x: 0, y: 0 },
+    maxAbsGYV: { value: 0, x: 0, y: 0 },
+    maxSpeed: { value: 0, x: 0, y: 0 },
+  };
+}
+
+function velocityStatsFromCells(cells, regions = []) {
+  const statsFor = [makeVelocityStats("all"), ...regions.map((r) => makeVelocityStats(r.name))];
+  const inRegion = (r, x, y) => x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1;
+  const add = (stats, x, y, base) => {
+    const u = cells[base + OFF.YUN];
+    const v = cells[base + OFF.YVN];
+    const kx = cells[base + OFF.KX];
+    const ky = cells[base + OFF.KY];
+    const gxu = cells[base + OFF.GXU];
+    const gyu = cells[base + OFF.GYU];
+    const gxv = cells[base + OFF.GXV];
+    const gyv = cells[base + OFF.GYV];
+    stats.samples += 1;
+    if (kx > 128) {
+      stats.fluidU += 1;
+      stats.energy += u * u;
+      if (Math.abs(u) > Math.abs(stats.maxAbsU.value)) {
+        stats.maxAbsU = { value: u, x, y };
+      }
+      if (Math.abs(gxu) > Math.abs(stats.maxAbsGXU.value)) {
+        stats.maxAbsGXU = { value: gxu, x, y };
+      }
+      if (Math.abs(gyu) > Math.abs(stats.maxAbsGYU.value)) {
+        stats.maxAbsGYU = { value: gyu, x, y };
+      }
+    }
+    if (ky > 128) {
+      stats.fluidV += 1;
+      stats.energy += v * v;
+      if (Math.abs(v) > Math.abs(stats.maxAbsV.value)) {
+        stats.maxAbsV = { value: v, x, y };
+      }
+      if (Math.abs(gxv) > Math.abs(stats.maxAbsGXV.value)) {
+        stats.maxAbsGXV = { value: gxv, x, y };
+      }
+      if (Math.abs(gyv) > Math.abs(stats.maxAbsGYV.value)) {
+        stats.maxAbsGYV = { value: gyv, x, y };
+      }
+    }
+    const speed = Math.hypot(kx > 128 ? u : 0, ky > 128 ? v : 0);
+    if (speed > stats.maxSpeed.value) {
+      stats.maxSpeed = { value: speed, x, y };
+    }
+  };
+
+  for (let y = 0; y < CO.WY; y += 1) {
+    for (let x = 0; x < CO.WX; x += 1) {
+      const base = (y * CO.WX + x) * STRIDE;
+      add(statsFor[0], x, y, base);
+      for (let i = 0; i < regions.length; i += 1) {
+        if (inRegion(regions[i], x, y)) {
+          add(statsFor[i + 1], x, y, base);
+        }
+      }
+    }
+  }
+
+  for (const stats of statsFor) {
+    stats.meanEnergy = stats.energy / Math.max(1, stats.fluidU + stats.fluidV);
+  }
+  return statsFor;
+}
+
+function velocityCellSamplesFromCells(cells, points = []) {
+  return points.map((point) => {
+    const x = ((point.x % CO.WX) + CO.WX) % CO.WX;
+    const y = ((point.y % CO.WY) + CO.WY) % CO.WY;
+    const base = (y * CO.WX + x) * STRIDE;
+    return {
+      name: point.name ?? `${x},${y}`,
+      x,
+      y,
+      yu: cells[base + OFF.YU],
+      yun: cells[base + OFF.YUN],
+      yv: cells[base + OFF.YV],
+      yvn: cells[base + OFF.YVN],
+      yuv: cells[base + OFF.YUV],
+      yvu: cells[base + OFF.YVU],
+      gxu: cells[base + OFF.GXU],
+      gyu: cells[base + OFF.GYU],
+      gxv: cells[base + OFF.GXV],
+      gyv: cells[base + OFF.GYV],
+      gxu0: cells[base + OFF.GXU0],
+      gyu0: cells[base + OFF.GYU0],
+      gxv0: cells[base + OFF.GXV0],
+      gyv0: cells[base + OFF.GYV0],
+      kx: cells[base + OFF.KX],
+      ky: cells[base + OFF.KY],
+    };
+  });
 }
 
 export class FluidGpuSimulation {
@@ -396,6 +506,12 @@ export class FluidGpuSimulation {
     this.objectInfoBuffer?.destroy?.();
     this.readbackBuffer?.destroy?.();
     this.cellReadbackBuffer?.destroy?.();
+    for (const buffer of this.velocitySnapshotBuffers ?? []) {
+      buffer?.destroy?.();
+    }
+    for (const buffer of this.velocitySnapshotReadbackBuffers ?? []) {
+      buffer?.destroy?.();
+    }
     this.particleBuffer?.destroy?.();
     this.particleReadbackBuffer?.destroy?.();
     this.emitterBuffer?.destroy?.();
@@ -404,6 +520,10 @@ export class FluidGpuSimulation {
     }
     this.moveObjectBuffers = [];
     this.moveObjectBindGroups = [];
+    this.velocitySnapshotBuffers = [];
+    this.velocitySnapshotReadbackBuffers = [];
+    this.velocitySnapshotCount = 0;
+    this.velocitySnapshotsPerBuffer = 0;
 
     this.cellBuffer = createBuffer(
       device,
@@ -567,91 +687,140 @@ export class FluidGpuSimulation {
     if (!this.cellBuffer || !this.cellReadbackBuffer) {
       return null;
     }
-    const byteLength = CELL_COUNT * STRIDE * 4;
     const encoder = this.device.createCommandEncoder({ label: "unity-fluid-stats-readback" });
-    encoder.copyBufferToBuffer(this.cellBuffer, 0, this.cellReadbackBuffer, 0, byteLength);
+    encoder.copyBufferToBuffer(this.cellBuffer, 0, this.cellReadbackBuffer, 0, CELL_BYTE_LENGTH);
     this.device.queue.submit([encoder.finish()]);
     await this.cellReadbackBuffer.mapAsync(GPUMapMode.READ);
     const cells = new Float32Array(this.cellReadbackBuffer.getMappedRange().slice(0));
     this.cellReadbackBuffer.unmap();
-
-    const makeStats = (name = "all") => ({
-      name,
-      samples: 0,
-      fluidU: 0,
-      fluidV: 0,
-      energy: 0,
-      maxAbsU: { value: 0, x: 0, y: 0 },
-      maxAbsV: { value: 0, x: 0, y: 0 },
-      maxAbsGXU: { value: 0, x: 0, y: 0 },
-      maxAbsGYU: { value: 0, x: 0, y: 0 },
-      maxAbsGXV: { value: 0, x: 0, y: 0 },
-      maxAbsGYV: { value: 0, x: 0, y: 0 },
-      maxSpeed: { value: 0, x: 0, y: 0 },
-    });
-    const statsFor = [makeStats("all"), ...regions.map((r) => makeStats(r.name))];
-    const inRegion = (r, x, y) => x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1;
-    const add = (stats, x, y, base) => {
-      const u = cells[base + OFF.YUN];
-      const v = cells[base + OFF.YVN];
-      const kx = cells[base + OFF.KX];
-      const ky = cells[base + OFF.KY];
-      const gxu = cells[base + OFF.GXU];
-      const gyu = cells[base + OFF.GYU];
-      const gxv = cells[base + OFF.GXV];
-      const gyv = cells[base + OFF.GYV];
-      stats.samples += 1;
-      if (kx > 128) {
-        stats.fluidU += 1;
-        stats.energy += u * u;
-        if (Math.abs(u) > Math.abs(stats.maxAbsU.value)) {
-          stats.maxAbsU = { value: u, x, y };
-        }
-        if (Math.abs(gxu) > Math.abs(stats.maxAbsGXU.value)) {
-          stats.maxAbsGXU = { value: gxu, x, y };
-        }
-        if (Math.abs(gyu) > Math.abs(stats.maxAbsGYU.value)) {
-          stats.maxAbsGYU = { value: gyu, x, y };
-        }
-      }
-      if (ky > 128) {
-        stats.fluidV += 1;
-        stats.energy += v * v;
-        if (Math.abs(v) > Math.abs(stats.maxAbsV.value)) {
-          stats.maxAbsV = { value: v, x, y };
-        }
-        if (Math.abs(gxv) > Math.abs(stats.maxAbsGXV.value)) {
-          stats.maxAbsGXV = { value: gxv, x, y };
-        }
-        if (Math.abs(gyv) > Math.abs(stats.maxAbsGYV.value)) {
-          stats.maxAbsGYV = { value: gyv, x, y };
-        }
-      }
-      const speed = Math.hypot(kx > 128 ? u : 0, ky > 128 ? v : 0);
-      if (speed > stats.maxSpeed.value) {
-        stats.maxSpeed = { value: speed, x, y };
-      }
-    };
-
-    for (let y = 0; y < CO.WY; y += 1) {
-      for (let x = 0; x < CO.WX; x += 1) {
-        const base = (y * CO.WX + x) * STRIDE;
-        add(statsFor[0], x, y, base);
-        for (let i = 0; i < regions.length; i += 1) {
-          if (inRegion(regions[i], x, y)) {
-            add(statsFor[i + 1], x, y, base);
-          }
-        }
-      }
-    }
-
-    for (const stats of statsFor) {
-      stats.meanEnergy = stats.energy / Math.max(1, stats.fluidU + stats.fluidV);
-    }
-    return statsFor;
+    return velocityStatsFromCells(cells, regions);
   }
 
-  step(ufo, moveObjects = []) {
+  prepareVelocitySnapshots(snapshotCount) {
+    for (const buffer of this.velocitySnapshotBuffers ?? []) {
+      buffer?.destroy?.();
+    }
+    for (const buffer of this.velocitySnapshotReadbackBuffers ?? []) {
+      buffer?.destroy?.();
+    }
+    this.velocitySnapshotCount = Math.max(0, snapshotCount | 0);
+    if (!this.cellBuffer || this.velocitySnapshotCount <= 0) {
+      this.velocitySnapshotBuffers = [];
+      this.velocitySnapshotReadbackBuffers = [];
+      this.velocitySnapshotsPerBuffer = 0;
+      return;
+    }
+    const maxBufferSize = this.device.limits?.maxBufferSize ?? (256 * 1024 * 1024);
+    this.velocitySnapshotsPerBuffer = Math.max(1, Math.floor(maxBufferSize / CELL_BYTE_LENGTH));
+    this.velocitySnapshotBuffers = [];
+    this.velocitySnapshotReadbackBuffers = [];
+    for (let offset = 0; offset < this.velocitySnapshotCount; offset += this.velocitySnapshotsPerBuffer) {
+      const count = Math.min(this.velocitySnapshotsPerBuffer, this.velocitySnapshotCount - offset);
+      const byteLength = CELL_BYTE_LENGTH * count;
+      this.velocitySnapshotBuffers.push(createBuffer(
+        this.device,
+        byteLength,
+        GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        `unity-fluid-velocity-snapshots-${this.velocitySnapshotBuffers.length}`,
+      ));
+      this.velocitySnapshotReadbackBuffers.push(createBuffer(
+        this.device,
+        byteLength,
+        GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+        `unity-fluid-velocity-snapshots-readback-${this.velocitySnapshotReadbackBuffers.length}`,
+      ));
+    }
+  }
+
+  encodeVelocitySnapshot(encoder, index) {
+    if (!this.cellBuffer || !this.velocitySnapshotBuffers?.length || index < 0 || index >= this.velocitySnapshotCount) {
+      return false;
+    }
+    const chunk = Math.floor(index / this.velocitySnapshotsPerBuffer);
+    const localIndex = index - chunk * this.velocitySnapshotsPerBuffer;
+    const snapshotBuffer = this.velocitySnapshotBuffers[chunk];
+    if (!snapshotBuffer) {
+      return false;
+    }
+    encoder.copyBufferToBuffer(this.cellBuffer, 0, snapshotBuffer, localIndex * CELL_BYTE_LENGTH, CELL_BYTE_LENGTH);
+    return true;
+  }
+
+  captureVelocitySnapshot(index) {
+    const encoder = this.device.createCommandEncoder({ label: "unity-fluid-velocity-snapshot" });
+    const captured = this.encodeVelocitySnapshot(encoder, index);
+    if (!captured) {
+      return false;
+    }
+    this.device.queue.submit([encoder.finish()]);
+    return true;
+  }
+
+  async readVelocitySnapshotStats(frames = [], regionsOrList = []) {
+    if (!this.velocitySnapshotBuffers?.length || !this.velocitySnapshotReadbackBuffers?.length || frames.length === 0) {
+      return [];
+    }
+    const snapshotCount = Math.min(frames.length, this.velocitySnapshotCount);
+    const results = [];
+    const regionsBySnapshot = Array.isArray(regionsOrList[0]) ? regionsOrList : null;
+    for (let chunk = 0; chunk < this.velocitySnapshotBuffers.length; chunk += 1) {
+      const start = chunk * this.velocitySnapshotsPerBuffer;
+      if (start >= snapshotCount) {
+        break;
+      }
+      const count = Math.min(this.velocitySnapshotsPerBuffer, snapshotCount - start);
+      const byteLength = CELL_BYTE_LENGTH * count;
+      const encoder = this.device.createCommandEncoder({ label: "unity-fluid-velocity-snapshots-readback" });
+      encoder.copyBufferToBuffer(this.velocitySnapshotBuffers[chunk], 0, this.velocitySnapshotReadbackBuffers[chunk], 0, byteLength);
+      this.device.queue.submit([encoder.finish()]);
+      await this.velocitySnapshotReadbackBuffers[chunk].mapAsync(GPUMapMode.READ, 0, byteLength);
+      const mapped = this.velocitySnapshotReadbackBuffers[chunk].getMappedRange(0, byteLength);
+      for (let i = 0; i < count; i += 1) {
+        const snapshotIndex = start + i;
+        const cells = new Float32Array(mapped, i * CELL_BYTE_LENGTH, CELL_COUNT * STRIDE);
+        const regions = regionsBySnapshot ? (regionsOrList[snapshotIndex] ?? []) : regionsOrList;
+        results.push({
+          frame: frames[snapshotIndex],
+          stats: velocityStatsFromCells(cells, regions),
+        });
+      }
+      this.velocitySnapshotReadbackBuffers[chunk].unmap();
+    }
+    return results;
+  }
+
+  async readVelocitySnapshotCells(frames = [], points = []) {
+    if (!this.velocitySnapshotBuffers?.length || !this.velocitySnapshotReadbackBuffers?.length || frames.length === 0) {
+      return [];
+    }
+    const snapshotCount = Math.min(frames.length, this.velocitySnapshotCount);
+    const results = [];
+    for (let chunk = 0; chunk < this.velocitySnapshotBuffers.length; chunk += 1) {
+      const start = chunk * this.velocitySnapshotsPerBuffer;
+      if (start >= snapshotCount) {
+        break;
+      }
+      const count = Math.min(this.velocitySnapshotsPerBuffer, snapshotCount - start);
+      const byteLength = CELL_BYTE_LENGTH * count;
+      const encoder = this.device.createCommandEncoder({ label: "unity-fluid-velocity-snapshot-cells-readback" });
+      encoder.copyBufferToBuffer(this.velocitySnapshotBuffers[chunk], 0, this.velocitySnapshotReadbackBuffers[chunk], 0, byteLength);
+      this.device.queue.submit([encoder.finish()]);
+      await this.velocitySnapshotReadbackBuffers[chunk].mapAsync(GPUMapMode.READ, 0, byteLength);
+      const mapped = this.velocitySnapshotReadbackBuffers[chunk].getMappedRange(0, byteLength);
+      for (let i = 0; i < count; i += 1) {
+        const snapshotIndex = start + i;
+        const cells = new Float32Array(mapped, i * CELL_BYTE_LENGTH, CELL_COUNT * STRIDE);
+        results.push({
+          frame: frames[snapshotIndex],
+          cells: velocityCellSamplesFromCells(cells, points),
+        });
+      }
+      this.velocitySnapshotReadbackBuffers[chunk].unmap();
+    }
+    return results;
+  }
+
+  step(ufo, moveObjects = [], snapshotCapture = null) {
     this.writeSim(ufo);
     this.writeParticleParams();
     this.writeObject(this.ufoObjectBuffer, ufo, 2, this.ufoShapeOffset, this.ufoShapeCount, ufo.spd);
@@ -662,7 +831,7 @@ export class FluidGpuSimulation {
     this.device.queue.writeBuffer(this.ufoeBuffer, 0, new Float32Array(4));
 
     const encoder = this.device.createCommandEncoder({ label: "unity-fluid-frame" });
-    const fluidPass = encoder.beginComputePass();
+    let fluidPass = encoder.beginComputePass();
     const dispatchGrid = (pass, pipe, bindGroup = this.ufoBindGroup) => {
       pass.setPipeline(pipe);
       pass.setBindGroup(0, bindGroup);
@@ -690,11 +859,23 @@ export class FluidGpuSimulation {
     }
     dispatchGrid(fluidPass, this.pipelines.kabeMapping);
 
+    const captureStage = (stageName, sub) => {
+      const index = snapshotCapture?.(stageName, sub);
+      if (!Number.isInteger(index)) {
+        return;
+      }
+      fluidPass.end();
+      this.encodeVelocitySnapshot(encoder, index);
+      fluidPass = encoder.beginComputePass();
+    };
+
     for (let sub = 0; sub < this.quality.substeps; sub += 1) {
       dispatchGrid(fluidPass, this.pipelines.copyVelocity);
       dispatchGrid(fluidPass, this.pipelines.velocityAverage);
       dispatchGrid(fluidPass, this.pipelines.copyGradients);
+      captureStage("beforeCip", sub);
       dispatchGrid(fluidPass, this.pipelines.cipVelocity);
+      captureStage("afterCipVelocity", sub);
       dispatchGrid(fluidPass, this.pipelines.cipHeat);
       dispatchGrid(fluidPass, this.pipelines.copyVelocity);
       dispatchGrid(fluidPass, this.pipelines.copyHeat);
@@ -705,8 +886,11 @@ export class FluidGpuSimulation {
       }
       dispatchOne(fluidPass, this.pipelines.ufoPressure, 1);
       dispatchGrid(fluidPass, this.pipelines.rhs);
+      captureStage("afterRhs", sub);
       dispatchGrid(fluidPass, this.pipelines.newGradV);
+      captureStage("afterNewGradV", sub);
       dispatchGrid(fluidPass, this.pipelines.newGradU);
+      captureStage("afterNewGradU", sub);
     }
     fluidPass.end();
 

@@ -69,6 +69,7 @@ const YUV : u32 = 31u;
 const YTTX : u32 = 32u;
 const YTTY : u32 = 33u;
 const LIMITF : f32 = 0.85;
+const CIP_TRANSVERSE_EPS : f32 = 0.001;
 
 fn cid(x : i32, y : i32) -> u32 {
   return u32(((y + WY) % WY) * WX + ((x + WX) % WX));
@@ -334,7 +335,9 @@ fn cip_velocity(@builtin(global_invocation_id) gid : vec3<u32>) {
     let gx = (3.0 * a1 + 2.0 * (c1 * yy + e1)) * xx + (d1 * yy + g1) * yy + gxd0;
     let gy = (3.0 * b1 + 2.0 * (d1 * xx + f1)) * yy + (c1 * xx + g1) * xx + gyd0;
     if (cells[at(c, KY)] > 128.0) {
-      let gxv = gx - 0.5 * sim.stage.y * (gx * (read_cell(x + 1, y, YUV) - read_cell(x - 1, y, YUV)) + gy * (read_cell(x + 1, y, YV) - read_cell(x - 1, y, YV)));
+      let raw_gxv = gx - 0.5 * sim.stage.y * (gx * (read_cell(x + 1, y, YUV) - read_cell(x - 1, y, YUV)) + gy * (read_cell(x + 1, y, YV) - read_cell(x - 1, y, YV)));
+      let limited_gxv = clamp(raw_gxv, -abs(gxd0), abs(gxd0));
+      let gxv = select(raw_gxv, limited_gxv, abs(xx) < CIP_TRANSVERSE_EPS);
       var vj0 = read_cell(x, y - 1, YV);
       var vj1 = read_cell(x, y + 1, YV);
       if (jsn == 1) { vj0 = v_j; }

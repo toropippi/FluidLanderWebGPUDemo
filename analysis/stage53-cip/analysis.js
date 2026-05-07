@@ -35,8 +35,8 @@ function intParam(name, fallback, min, max) {
 }
 
 const stepsPerTick = intParam("steps", 100, 1, 1000);
-const renderEveryFrames = intParam("renderEvery", 100, 1, 10000);
-const sampleEveryFrames = intParam("sampleEvery", 100, 1, 10000);
+const renderEveryFrames = intParam("renderEvery", 8, 1, 10000);
+const sampleEveryFrames = intParam("sampleEvery", 1, 1, 10000);
 const stopFrame = intParam("stopFrame", 174, 0, 2000);
 const endFrame = intParam("endFrame", 720, stopFrame + 1, 100000);
 
@@ -44,7 +44,7 @@ const renderer = new GameRenderer(canvas);
 let fluid = null;
 let game = null;
 let replayStart = 0;
-let lastRenderedFrame = -Infinity;
+let lastRenderedFrame = 0;
 let lastSampleFrame = 0;
 let samplePending = false;
 let samples = [];
@@ -60,6 +60,8 @@ let loadingReplay = false;
 let simFrame = 0;
 let replayToken = 0;
 let replayHistory = [];
+let renderHistory = [];
+let snapshotRecords = [];
 let currentReplayFinished = false;
 let sampleAttempts = 0;
 let sampleCompletions = 0;
@@ -139,10 +141,13 @@ function finishReplay(reason) {
     sampleAttempts,
     sampleCompletions,
     sampleSkips,
+    snapshotCount: snapshotRecords.length,
+    snapshotFrames: snapshotRecords.map((item) => item.frame),
     stopFrame,
     endFrame,
     stepsPerTick,
     renderEveryFrames,
+    renderHistory: [...renderHistory],
     sampleEveryFrames,
     peakSide: structuredClone(peakSide),
     peakLeftTip: structuredClone(peakLeftTip),
@@ -191,34 +196,37 @@ async function sampleFluid(frameNumber, scale, token = replayToken) {
     if (token !== replayToken) {
       return;
     }
-    const top = pickTopRegion(stats);
-    if (!top) {
-      return;
-    }
-    latestTop = top;
-    latestSide = pickTopSide(stats);
-    peakSide = updatePeak(peakSide, latestSide);
-    peakLeftTip = updatePeak(peakLeftTip, stats.find((item) => item.name === "leftTip"));
-    peakRightTip = updatePeak(peakRightTip, stats.find((item) => item.name === "rightTip"));
-    const sample = {
-      frame: frameNumber,
-      scale,
-      objectY: game.stage.moveObjects[0]?.y ?? 0,
-      top,
-      side: latestSide,
-    };
-    samples.push(sample);
-    appendSampleRow(sample);
-    if ((peakSide?.maxSpeed.value ?? 0) >= SIDE_EXPLOSION_THRESHOLD && !sideExplosionDetected) {
-      sideExplosionDetected = true;
-      finishReplay("trigger");
-    }
+    applyVelocityStats(frameNumber, scale, game.stage.moveObjects[0]?.y ?? 0, stats);
   } catch (error) {
     lastSampleError = error?.message ?? String(error);
     lastSampleStatus = "error";
     console.error(error);
   } finally {
     samplePending = false;
+  }
+}
+
+function applyVelocityStats(frameNumber, scale, objectY, stats) {
+  const top = pickTopRegion(stats);
+  if (!top) {
+    return;
+  }
+  latestTop = top;
+  latestSide = pickTopSide(stats);
+  peakSide = updatePeak(peakSide, latestSide);
+  peakLeftTip = updatePeak(peakLeftTip, stats.find((item) => item.name === "leftTip"));
+  peakRightTip = updatePeak(peakRightTip, stats.find((item) => item.name === "rightTip"));
+  const sample = {
+    frame: frameNumber,
+    scale,
+    objectY,
+    top,
+    side: latestSide,
+  };
+  samples.push(sample);
+  appendSampleRow(sample);
+  if ((peakSide?.maxSpeed.value ?? 0) >= SIDE_EXPLOSION_THRESHOLD) {
+    sideExplosionDetected = true;
   }
 }
 
@@ -349,6 +357,8 @@ async function restartReplay() {
   peakSide = null;
   peakLeftTip = null;
   peakRightTip = null;
+  renderHistory = [];
+  snapshotRecords = [];
   sideExplosionDetected = false;
   sampleBody.textContent = "";
   loadingReplay = true;
@@ -360,19 +370,21 @@ async function restartReplay() {
     const collisionPoints = loadUfoCollisionPoints(ufocoli);
     const nextFluid = new FluidGpuSimulation(UNITY_FLUID_QUALITY);
     await nextFluid.loadAssets(stage);
+    nextFluid.prepareVelocitySnapshots(Math.ceil(endFrame / sampleEveryFrames) + 1);
     await renderer.load(stage);
     fluid = nextFluid;
     game = new GameState(stage, collisionPoints);
     removeUfoFromAnalysis();
     game.stage.moveObjectSpeedScale = START_SCALE;
     replayStart = performance.now();
-    lastRenderedFrame = -Infinity;
+    lastRenderedFrame = 0;
     lastSampleFrame = 0;
     simFrame = 0;
     replayCount += 1;
     currentReplayFinished = false;
-    setStatus(`Replay running.\n${stepsPerTick} CFD frames per browser tick. Render every ${renderEveryFrames} CFD frames. Sample every ${sampleEveryFrames} CFD frames.\nMoveobject speed: 0.5x until CFD frame ${stopFrame}, then fixed at 0.0x.\nIf left/right side speed stays below 0.15 by CFD frame ${endFrame}, replay restarts automatically.`);
+    setStatus(`Replay running.\nUp to ${stepsPerTick} CFD frames per browser tick. Yield for display every ${renderEveryFrames} CFD frames. Snapshot on GPU every ${sampleEveryFrames} CFD frames.\nMoveobject speed: 0.5x until CFD frame ${stopFrame}, then fixed at 0.0x.\nAt CFD frame ${endFrame}, snapshots are read back once and judged on CPU.`);
     restarting = false;
+    renderFrame();
   } finally {
     loadingReplay = false;
   }
@@ -384,6 +396,105 @@ function renderFrame() {
   drawAnalysisOverlay();
   updatePanel(simFrame, scale);
   lastRenderedFrame = simFrame;
+  renderHistory.push(simFrame);
+  while (renderHistory.length > 50) {
+    renderHistory.shift();
+  }
+}
+
+function renderIfDue(force = false) {
+  if (force || simFrame - lastRenderedFrame >= renderEveryFrames) {
+    renderFrame();
+    return true;
+  }
+  return false;
+}
+
+function advanceCfdFrame() {
+  const scale = scenarioScale();
+  game.stage.moveObjectSpeedScale = scale;
+  for (const obj of game.stage.moveObjects ?? []) {
+    updateMoveObject(obj, scale);
+  }
+  removeUfoFromAnalysis();
+  fluid.step(game.ufo, game.stage.moveObjects ?? []);
+  simFrame += 1;
+  return scale;
+}
+
+function sampleIfDue(scale) {
+  if (simFrame - lastSampleFrame < sampleEveryFrames) {
+    return false;
+  }
+  lastSampleFrame = simFrame;
+  const snapshotIndex = snapshotRecords.length;
+  sampleAttempts += 1;
+  const captured = fluid.captureVelocitySnapshot(snapshotIndex);
+  if (!captured) {
+    sampleSkips += 1;
+    lastSampleStatus = "snapshot-skip";
+    return false;
+  }
+  snapshotRecords.push({
+    frame: simFrame,
+    scale,
+    objectY: game.stage.moveObjects[0]?.y ?? 0,
+    regions: objectRegions(),
+  });
+  lastSampleStatus = `snapshot:${simFrame}`;
+  return true;
+}
+
+async function finalizeSnapshots(reason) {
+  samplePending = true;
+  lastSampleStatus = "readback-pending";
+  try {
+    const token = replayToken;
+    const frames = snapshotRecords.map((item) => item.frame);
+    const regions = snapshotRecords.map((item) => item.regions);
+    const results = await fluid.readVelocitySnapshotStats(frames, regions);
+    if (token !== replayToken) {
+      return;
+    }
+    samples = [];
+    sampleBody.textContent = "";
+    latestTop = null;
+    latestSide = null;
+    peakSide = null;
+    peakLeftTip = null;
+    peakRightTip = null;
+    sideExplosionDetected = false;
+    for (let i = 0; i < results.length; i += 1) {
+      const record = snapshotRecords[i];
+      applyVelocityStats(results[i].frame, record?.scale ?? 0, record?.objectY ?? 0, results[i].stats);
+    }
+    sampleCompletions = results.length;
+    lastSampleStatus = `readback:${results.length}`;
+    finishReplay(sideExplosionDetected ? "trigger" : reason);
+    renderFrame();
+  } catch (error) {
+    lastSampleError = error?.message ?? String(error);
+    lastSampleStatus = "error";
+    console.error(error);
+  } finally {
+    samplePending = false;
+  }
+}
+
+function restartAfterTimeout() {
+  restarting = true;
+  setStatus(`Reading ${snapshotRecords.length} GPU snapshots for CPU analysis...`);
+  finalizeSnapshots("timeout").then(() => {
+    if (sideExplosionDetected) {
+      setStatus(`Side explosion detected from ${snapshotRecords.length} GPU snapshots.`);
+    } else {
+      setStatus(`No side explosion by CFD frame ${endFrame}. Restarting replay...`);
+      restartReplay().catch((error) => {
+        console.error(error);
+        setStatus(error.message, "bad");
+      });
+    }
+  });
 }
 
 function frame() {
@@ -394,34 +505,21 @@ function frame() {
   if (samplePending) {
     return;
   }
+  if (currentReplayFinished) {
+    return;
+  }
   for (let step = 0; step < stepsPerTick; step += 1) {
     if (!restarting && simFrame >= endFrame && !sideExplosionDetected) {
-      restarting = true;
-      finishReplay("timeout");
-      setStatus(`No side explosion by CFD frame ${endFrame}. Restarting replay...`);
-      restartReplay().catch((error) => {
-        console.error(error);
-        setStatus(error.message, "bad");
-      });
+      restartAfterTimeout();
       return;
     }
-    const scale = scenarioScale();
-    game.stage.moveObjectSpeedScale = scale;
-    for (const obj of game.stage.moveObjects ?? []) {
-      updateMoveObject(obj, scale);
-    }
-    removeUfoFromAnalysis();
-    fluid.step(game.ufo, game.stage.moveObjects ?? []);
-    simFrame += 1;
-    if (simFrame - lastSampleFrame >= sampleEveryFrames) {
-      lastSampleFrame = simFrame;
-      sampleFluid(simFrame, scale, replayToken);
-      break;
+    const scale = advanceCfdFrame();
+    sampleIfDue(scale);
+    if (renderIfDue()) {
+      return;
     }
   }
-  if (simFrame - lastRenderedFrame >= renderEveryFrames || sideExplosionDetected) {
-    renderFrame();
-  }
+  renderIfDue(sideExplosionDetected);
 }
 
 restartBtn.addEventListener("click", () => {
@@ -443,12 +541,15 @@ window.__stage53AnalysisDebug = {
       endFrame,
       simFrame,
       lastRenderedFrame,
+      renderHistory,
       samplePending,
       sampleAttempts,
       sampleCompletions,
       sampleSkips,
       lastSampleStatus,
       lastSampleError,
+      snapshotCount: snapshotRecords.length,
+      snapshotFrames: snapshotRecords.map((item) => item.frame),
       sideExplosionDetected,
       latestTop,
       latestSide,
