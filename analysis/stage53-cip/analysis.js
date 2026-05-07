@@ -19,33 +19,61 @@ const restartBtn = document.getElementById("restartBtn");
 const csvBtn = document.getElementById("csvBtn");
 
 const START_SCALE = 0.5;
-const STOP_AFTER_MS = 3000;
-const SAMPLE_INTERVAL_MS = 500;
-const AUTO_RESTART_AFTER_MS = 12000;
 const SIDE_EXPLOSION_THRESHOLD = 0.15;
+const query = new URLSearchParams(window.location.search);
+
+function intParam(name, fallback, min, max) {
+  const rawValue = query.get(name);
+  if (rawValue === null || rawValue === "") {
+    return fallback;
+  }
+  const value = Number(rawValue);
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+const stepsPerTick = intParam("steps", 100, 1, 1000);
+const renderEveryFrames = intParam("renderEvery", 100, 1, 10000);
+const sampleEveryFrames = intParam("sampleEvery", 100, 1, 10000);
+const stopFrame = intParam("stopFrame", 174, 0, 2000);
+const endFrame = intParam("endFrame", 720, stopFrame + 1, 100000);
 
 const renderer = new GameRenderer(canvas);
 let fluid = null;
 let game = null;
 let replayStart = 0;
-let lastSample = 0;
+let lastRenderedFrame = -Infinity;
+let lastSampleFrame = 0;
 let samplePending = false;
 let samples = [];
 let latestTop = null;
 let latestSide = null;
 let peakSide = null;
+let peakLeftTip = null;
+let peakRightTip = null;
 let sideExplosionDetected = false;
 let restarting = false;
 let replayCount = 0;
 let loadingReplay = false;
+let simFrame = 0;
+let replayToken = 0;
+let replayHistory = [];
+let currentReplayFinished = false;
+let sampleAttempts = 0;
+let sampleCompletions = 0;
+let sampleSkips = 0;
+let lastSampleError = "";
+let lastSampleStatus = "idle";
 
 function setStatus(text, kind = "") {
   statusEl.className = kind;
   statusEl.textContent = text;
 }
 
-function scenarioScale(elapsedMs) {
-  return elapsedMs < STOP_AFTER_MS ? START_SCALE : 0;
+function scenarioScale(frameNumber = simFrame) {
+  return frameNumber < stopFrame ? START_SCALE : 0;
 }
 
 function format(value, digits = 4) {
@@ -88,6 +116,44 @@ function pickTopSide(stats) {
   ), null);
 }
 
+function updatePeak(current, next) {
+  if (!next) {
+    return current;
+  }
+  return next.maxSpeed.value > (current?.maxSpeed.value ?? -Infinity) ? structuredClone(next) : current;
+}
+
+function finishReplay(reason) {
+  if (currentReplayFinished || replayCount <= 0) {
+    return;
+  }
+  currentReplayFinished = true;
+  replayHistory.push({
+    replay: replayCount,
+    reason,
+    detected: sideExplosionDetected,
+    simFrame,
+    frame: simFrame,
+    realElapsed: replayStart ? (performance.now() - replayStart) / 1000 : 0,
+    sampleCount: samples.length,
+    sampleAttempts,
+    sampleCompletions,
+    sampleSkips,
+    stopFrame,
+    endFrame,
+    stepsPerTick,
+    renderEveryFrames,
+    sampleEveryFrames,
+    peakSide: structuredClone(peakSide),
+    peakLeftTip: structuredClone(peakLeftTip),
+    peakRightTip: structuredClone(peakRightTip),
+    lastSampleError,
+  });
+  while (replayHistory.length > 50) {
+    replayHistory.shift();
+  }
+}
+
 function appendSampleRow(sample) {
   const row = document.createElement("tr");
   if (sample.top.maxSpeed.value > 0.18) {
@@ -96,7 +162,7 @@ function appendSampleRow(sample) {
     row.className = "warn";
   }
   row.innerHTML = `
-    <td>${format(sample.elapsed, 1)}</td>
+    <td>${sample.frame}</td>
     <td>${format(sample.scale, 2)}</td>
     <td>${sample.top.name}</td>
     <td>${format(sample.top.maxSpeed.value)}</td>
@@ -110,27 +176,32 @@ function appendSampleRow(sample) {
   }
 }
 
-async function sampleFluid(elapsedMs, scale) {
+async function sampleFluid(frameNumber, scale, token = replayToken) {
   if (samplePending || !fluid?.readVelocityStats) {
+    sampleSkips += 1;
     return;
   }
   samplePending = true;
+  sampleAttempts += 1;
+  lastSampleStatus = "pending";
   try {
     const stats = await fluid.readVelocityStats(objectRegions());
+    sampleCompletions += 1;
+    lastSampleStatus = `stats:${stats?.length ?? 0}`;
+    if (token !== replayToken) {
+      return;
+    }
     const top = pickTopRegion(stats);
     if (!top) {
       return;
     }
     latestTop = top;
     latestSide = pickTopSide(stats);
-    if ((latestSide?.maxSpeed.value ?? 0) > (peakSide?.maxSpeed.value ?? -Infinity)) {
-      peakSide = structuredClone(latestSide);
-    }
-    if ((peakSide?.maxSpeed.value ?? 0) >= SIDE_EXPLOSION_THRESHOLD) {
-      sideExplosionDetected = true;
-    }
+    peakSide = updatePeak(peakSide, latestSide);
+    peakLeftTip = updatePeak(peakLeftTip, stats.find((item) => item.name === "leftTip"));
+    peakRightTip = updatePeak(peakRightTip, stats.find((item) => item.name === "rightTip"));
     const sample = {
-      elapsed: elapsedMs / 1000,
+      frame: frameNumber,
       scale,
       objectY: game.stage.moveObjects[0]?.y ?? 0,
       top,
@@ -138,14 +209,23 @@ async function sampleFluid(elapsedMs, scale) {
     };
     samples.push(sample);
     appendSampleRow(sample);
+    if ((peakSide?.maxSpeed.value ?? 0) >= SIDE_EXPLOSION_THRESHOLD && !sideExplosionDetected) {
+      sideExplosionDetected = true;
+      finishReplay("trigger");
+    }
+  } catch (error) {
+    lastSampleError = error?.message ?? String(error);
+    lastSampleStatus = "error";
+    console.error(error);
   } finally {
     samplePending = false;
   }
 }
 
-function updatePanel(elapsedMs, scale) {
+function updatePanel(frameNumber, scale) {
   const obj = game?.stage?.moveObjects?.[0];
-  elapsedValue.textContent = `${(elapsedMs / 1000).toFixed(2)}s`;
+  const realElapsed = replayStart ? (performance.now() - replayStart) / 1000 : 0;
+  elapsedValue.textContent = `${frameNumber} / ${realElapsed.toFixed(2)}s real`;
   speedValue.textContent = `${scale.toFixed(2)}x`;
   objectValue.textContent = obj ? `${obj.x.toFixed(1)}, ${obj.y.toFixed(1)}` : "--";
   if (latestTop) {
@@ -196,7 +276,7 @@ function drawAnalysisOverlay() {
 
 function csvText() {
   const header = [
-    "elapsed",
+    "frame",
     "scale",
     "objectY",
     "slit",
@@ -212,7 +292,7 @@ function csvText() {
     "meanEnergy",
   ];
   const lines = samples.map((sample) => [
-    sample.elapsed,
+    sample.frame,
     sample.scale,
     sample.objectY,
     sample.top.name,
@@ -256,10 +336,19 @@ function removeUfoFromAnalysis() {
 
 async function restartReplay() {
   setStatus("Loading 5-3modify analysis replay...");
+  finishReplay("restart");
+  replayToken += 1;
   samples = [];
+  sampleAttempts = 0;
+  sampleCompletions = 0;
+  sampleSkips = 0;
+  lastSampleError = "";
+  lastSampleStatus = "idle";
   latestTop = null;
   latestSide = null;
   peakSide = null;
+  peakLeftTip = null;
+  peakRightTip = null;
   sideExplosionDetected = false;
   sampleBody.textContent = "";
   loadingReplay = true;
@@ -277,43 +366,61 @@ async function restartReplay() {
     removeUfoFromAnalysis();
     game.stage.moveObjectSpeedScale = START_SCALE;
     replayStart = performance.now();
-    lastSample = 0;
+    lastRenderedFrame = -Infinity;
+    lastSampleFrame = 0;
+    simFrame = 0;
     replayCount += 1;
-    setStatus("Replay running.\nMoveobject speed: 0.5x for the first 3 seconds, then fixed at 0.0x.\nIf left/right side speed stays below 0.15 for 12s, replay restarts automatically.");
+    currentReplayFinished = false;
+    setStatus(`Replay running.\n${stepsPerTick} CFD frames per browser tick. Render every ${renderEveryFrames} CFD frames. Sample every ${sampleEveryFrames} CFD frames.\nMoveobject speed: 0.5x until CFD frame ${stopFrame}, then fixed at 0.0x.\nIf left/right side speed stays below 0.15 by CFD frame ${endFrame}, replay restarts automatically.`);
     restarting = false;
   } finally {
     loadingReplay = false;
   }
 }
 
-function frame(now) {
+function renderFrame() {
+  const scale = scenarioScale();
+  renderer.draw(game, fluid);
+  drawAnalysisOverlay();
+  updatePanel(simFrame, scale);
+  lastRenderedFrame = simFrame;
+}
+
+function frame() {
   requestAnimationFrame(frame);
   if (loadingReplay || !game || !fluid) {
     return;
   }
-  const elapsedMs = now - replayStart;
-  if (!restarting && elapsedMs >= AUTO_RESTART_AFTER_MS && !sideExplosionDetected) {
-    restarting = true;
-    setStatus("No side explosion by 12s. Restarting replay...");
-    restartReplay().catch((error) => {
-      console.error(error);
-      setStatus(error.message, "bad");
-    });
+  if (samplePending) {
     return;
   }
-  const scale = scenarioScale(elapsedMs);
-  game.stage.moveObjectSpeedScale = scale;
-  for (const obj of game.stage.moveObjects ?? []) {
-    updateMoveObject(obj, scale);
+  for (let step = 0; step < stepsPerTick; step += 1) {
+    if (!restarting && simFrame >= endFrame && !sideExplosionDetected) {
+      restarting = true;
+      finishReplay("timeout");
+      setStatus(`No side explosion by CFD frame ${endFrame}. Restarting replay...`);
+      restartReplay().catch((error) => {
+        console.error(error);
+        setStatus(error.message, "bad");
+      });
+      return;
+    }
+    const scale = scenarioScale();
+    game.stage.moveObjectSpeedScale = scale;
+    for (const obj of game.stage.moveObjects ?? []) {
+      updateMoveObject(obj, scale);
+    }
+    removeUfoFromAnalysis();
+    fluid.step(game.ufo, game.stage.moveObjects ?? []);
+    simFrame += 1;
+    if (simFrame - lastSampleFrame >= sampleEveryFrames) {
+      lastSampleFrame = simFrame;
+      sampleFluid(simFrame, scale, replayToken);
+      break;
+    }
   }
-  removeUfoFromAnalysis();
-  fluid.step(game.ufo, game.stage.moveObjects ?? []);
-  renderer.draw(game, fluid);
-  drawAnalysisOverlay();
-  updatePanel(elapsedMs, scale);
-  if (elapsedMs - lastSample >= SAMPLE_INTERVAL_MS) {
-    lastSample = elapsedMs;
-    sampleFluid(elapsedMs, scale);
+  if (simFrame - lastRenderedFrame >= renderEveryFrames || sideExplosionDetected) {
+    renderFrame();
   }
 }
 
@@ -329,13 +436,30 @@ window.__stage53AnalysisDebug = {
   getState() {
     return {
       replayCount,
+      stepsPerTick,
+      renderEveryFrames,
+      sampleEveryFrames,
+      stopFrame,
+      endFrame,
+      simFrame,
+      lastRenderedFrame,
+      samplePending,
+      sampleAttempts,
+      sampleCompletions,
+      sampleSkips,
+      lastSampleStatus,
+      lastSampleError,
       sideExplosionDetected,
       latestTop,
       latestSide,
       peakSide,
+      peakLeftTip,
+      peakRightTip,
+      replayHistory,
       sampleCount: samples.length,
       samples,
-      elapsed: replayStart ? (performance.now() - replayStart) / 1000 : 0,
+      frame: simFrame,
+      realElapsed: replayStart ? (performance.now() - replayStart) / 1000 : 0,
     };
   },
 };
