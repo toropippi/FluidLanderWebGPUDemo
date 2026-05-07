@@ -245,6 +245,54 @@ fn copy_gradients(@builtin(global_invocation_id) gid : vec3<u32>) {
   cells[at(c, GYE0)] = cells[at(c, GYE)];
 }
 
+fn cip_u_x_value(row_y : i32, x : i32, xx : f32, isn : i32) -> f32 {
+  let x1 = x - isn;
+  let u0 = read_cell(x, row_y, YU);
+  let u1 = read_cell(x1, row_y, YU);
+  let gx0 = read_cell(x, row_y, GXU0);
+  let gx1 = read_cell(x1, row_y, GXU0);
+  let s = f32(isn);
+  let b = gx1 + gx0 - 2.0 * s * (u0 - u1);
+  let f = 3.0 * (u1 - u0) + (gx1 + 2.0 * gx0) * s;
+  return ((b * xx + f) * xx + gx0) * xx + u0;
+}
+
+fn cip_u_x_grad(row_y : i32, x : i32, xx : f32, isn : i32) -> f32 {
+  let x1 = x - isn;
+  let u0 = read_cell(x, row_y, YU);
+  let u1 = read_cell(x1, row_y, YU);
+  let gx0 = read_cell(x, row_y, GXU0);
+  let gx1 = read_cell(x1, row_y, GXU0);
+  let s = f32(isn);
+  let b = gx1 + gx0 - 2.0 * s * (u0 - u1);
+  let f = 3.0 * (u1 - u0) + (gx1 + 2.0 * gx0) * s;
+  return (3.0 * b * xx + 2.0 * f) * xx + gx0;
+}
+
+fn cip_v_y_value(col_x : i32, y : i32, yy : f32, jsn : i32) -> f32 {
+  let y1 = y - jsn;
+  let v0 = read_cell(col_x, y, YV);
+  let v1 = read_cell(col_x, y1, YV);
+  let gy0 = read_cell(col_x, y, GYV0);
+  let gy1 = read_cell(col_x, y1, GYV0);
+  let s = f32(jsn);
+  let b = gy1 + gy0 - 2.0 * s * (v0 - v1);
+  let f = 3.0 * (v1 - v0) + (gy1 + 2.0 * gy0) * s;
+  return ((b * yy + f) * yy + gy0) * yy + v0;
+}
+
+fn cip_v_y_grad(col_x : i32, y : i32, yy : f32, jsn : i32) -> f32 {
+  let y1 = y - jsn;
+  let v0 = read_cell(col_x, y, YV);
+  let v1 = read_cell(col_x, y1, YV);
+  let gy0 = read_cell(col_x, y, GYV0);
+  let gy1 = read_cell(col_x, y1, GYV0);
+  let s = f32(jsn);
+  let b = gy1 + gy0 - 2.0 * s * (v0 - v1);
+  let f = 3.0 * (v1 - v0) + (gy1 + 2.0 * gy0) * s;
+  return (3.0 * b * yy + 2.0 * f) * yy + gy0;
+}
+
 @compute @workgroup_size(16, 16, 1)
 fn cip_velocity(@builtin(global_invocation_id) gid : vec3<u32>) {
   let x = i32(gid.x);
@@ -288,14 +336,28 @@ fn cip_velocity(@builtin(global_invocation_id) gid : vec3<u32>) {
     let gx = (3.0 * a1 + 2.0 * (c1 * yy + e1)) * xx + (d1 * yy + g1) * yy + gxd0;
     let gy = (3.0 * b1 + 2.0 * (d1 * xx + f1)) * yy + (c1 * xx + g1) * xx + gyd0;
     if (cells[at(c, KX)] > 128.0) {
-      let gxv = gx - 0.5 * sim.stage.y * (gx * (read_cell(x + 1, y, YU) - read_cell(x - 1, y, YU)) + gy * (read_cell(x + 1, y, YVU) - read_cell(x - 1, y, YVU)));
-      var uj0 = read_cell(x, y - 1, YU);
-      var uj1 = read_cell(x, y + 1, YU);
-      if (isn == 1) { uj0 = u_j; }
-      if (isn == -1) { uj1 = u_j; }
-      let gyv = gy - 0.5 * sim.stage.y * (gx * (uj1 - uj0) + gy * (read_cell(x, y + 1, YVU) - read_cell(x, y - 1, YVU)));
-      cells[at(c, GXU)] = clamp(gxv, -LIMITF, LIMITF);
-      cells[at(c, GYU)] = clamp(gyv, -LIMITF, LIMITF);
+      var gxu = gx - 0.5 * sim.stage.y * (gx * (read_cell(x + 1, y, YU) - read_cell(x - 1, y, YU)) + gy * (read_cell(x + 1, y, YVU) - read_cell(x - 1, y, YVU)));
+      var gyu = 0.0;
+      if (abs(yy) < CIP_TRANSVERSE_EPS && abs(xx) >= CIP_TRANSVERSE_EPS && isn != 0) {
+        let u_adv = cip_u_x_value(y, x, xx, isn);
+        let gx_adv = cip_u_x_grad(y, x, xx, isn);
+        let u_adv_yp = cip_u_x_value(y + 1, x, xx, isn);
+        let u_adv_ym = cip_u_x_value(y - 1, x, xx, isn);
+        let gy_adv = 0.5 * (u_adv_yp - u_adv_ym);
+        let dYVUdx = 0.5 * (read_cell(x + 1, y, YVU) - read_cell(x - 1, y, YVU));
+        let dYVUdy = 0.5 * (read_cell(x, y + 1, YVU) - read_cell(x, y - 1, YVU));
+        cells[at(c, YUN)] = clamp(u_adv, -LIMITF, LIMITF);
+        gxu = gx_adv - sim.stage.y * (gx_adv * gx_adv + gy_adv * dYVUdx);
+        gyu = gy_adv - sim.stage.y * (gx_adv * gy_adv + gy_adv * dYVUdy);
+      } else {
+        var uj0 = read_cell(x, y - 1, YU);
+        var uj1 = read_cell(x, y + 1, YU);
+        if (isn == 1) { uj0 = u_j; }
+        if (isn == -1) { uj1 = u_j; }
+        gyu = gy - 0.5 * sim.stage.y * (gx * (uj1 - uj0) + gy * (read_cell(x, y + 1, YVU) - read_cell(x, y - 1, YVU)));
+      }
+      cells[at(c, GXU)] = clamp(gxu, -LIMITF, LIMITF);
+      cells[at(c, GYU)] = clamp(gyu, -LIMITF, LIMITF);
     }
   }
 
@@ -335,14 +397,27 @@ fn cip_velocity(@builtin(global_invocation_id) gid : vec3<u32>) {
     let gx = (3.0 * a1 + 2.0 * (c1 * yy + e1)) * xx + (d1 * yy + g1) * yy + gxd0;
     let gy = (3.0 * b1 + 2.0 * (d1 * xx + f1)) * yy + (c1 * xx + g1) * xx + gyd0;
     if (cells[at(c, KY)] > 128.0) {
-      let raw_gxv = gx - 0.5 * sim.stage.y * (gx * (read_cell(x + 1, y, YUV) - read_cell(x - 1, y, YUV)) + gy * (read_cell(x + 1, y, YV) - read_cell(x - 1, y, YV)));
-      let limited_gxv = clamp(raw_gxv, -abs(gxd0), abs(gxd0));
-      let gxv = select(raw_gxv, limited_gxv, abs(xx) < CIP_TRANSVERSE_EPS);
-      var vj0 = read_cell(x, y - 1, YV);
-      var vj1 = read_cell(x, y + 1, YV);
-      if (jsn == 1) { vj0 = v_j; }
-      if (jsn == -1) { vj1 = v_j; }
-      let gyv = gy - 0.5 * sim.stage.y * (gx * (read_cell(x, y + 1, YUV) - read_cell(x, y - 1, YUV)) + gy * (vj1 - vj0));
+      var gxv = 0.0;
+      var gyv = 0.0;
+      if (abs(xx) < CIP_TRANSVERSE_EPS && abs(yy) >= CIP_TRANSVERSE_EPS && jsn != 0) {
+        let v_adv = cip_v_y_value(x, y, yy, jsn);
+        let gy_adv = cip_v_y_grad(x, y, yy, jsn);
+        let v_adv_xp = cip_v_y_value(x + 1, y, yy, jsn);
+        let v_adv_xm = cip_v_y_value(x - 1, y, yy, jsn);
+        let gx_adv = 0.5 * (v_adv_xp - v_adv_xm);
+        let dYUVdx = 0.5 * (read_cell(x + 1, y, YUV) - read_cell(x - 1, y, YUV));
+        let dYUVdy = 0.5 * (read_cell(x, y + 1, YUV) - read_cell(x, y - 1, YUV));
+        cells[at(c, YVN)] = clamp(v_adv, -LIMITF, LIMITF);
+        gxv = gx_adv - sim.stage.y * (dYUVdx * gx_adv + gx_adv * gy_adv);
+        gyv = gy_adv - sim.stage.y * (dYUVdy * gx_adv + gy_adv * gy_adv);
+      } else {
+        gxv = gx - 0.5 * sim.stage.y * (gx * (read_cell(x + 1, y, YUV) - read_cell(x - 1, y, YUV)) + gy * (read_cell(x + 1, y, YV) - read_cell(x - 1, y, YV)));
+        var vj0 = read_cell(x, y - 1, YV);
+        var vj1 = read_cell(x, y + 1, YV);
+        if (jsn == 1) { vj0 = v_j; }
+        if (jsn == -1) { vj1 = v_j; }
+        gyv = gy - 0.5 * sim.stage.y * (gx * (read_cell(x, y + 1, YUV) - read_cell(x, y - 1, YUV)) + gy * (vj1 - vj0));
+      }
       cells[at(c, GXV)] = clamp(gxv, -LIMITF, LIMITF);
       cells[at(c, GYV)] = clamp(gyv, -LIMITF, LIMITF);
     }
