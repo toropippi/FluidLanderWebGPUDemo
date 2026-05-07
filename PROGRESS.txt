@@ -1,0 +1,49 @@
+# PROGRESS.txt
+
+This file is the mandatory progress log for ongoing work in this repository.
+
+Log format:
+[YYYY-MM-DD HH:MM] [STATUS] short description
+
+Status values:
+TODO
+IN_PROGRESS
+BLOCKED
+DONE
+
+Current log:
+[2026-02-09 00:26] [IN_PROGRESS] Convert AGENT.md to English and set up mandatory progress tracking.
+[2026-02-09 00:26] [DONE] Converted AGENT.md to English, added PROGRESS.txt, and linked progress logging policy.
+[2026-02-09 00:28] [IN_PROGRESS] Extract fluid logic from existing Unity project and build a GitHub Pages-ready WebGPU demo.
+[2026-02-09 00:35] [DONE] Extracted Unity fluid core flow and implemented a static WebGPU demo (index.html + WGSL compute/render + JS + README).
+[2026-02-09 00:48] [IN_PROGRESS] Fix no-interaction issue by removing storage-buffer aliasing and adding WebGPU runtime error reporting.
+[2026-02-09 00:48] [DONE] Replaced aliased storage bindings with distinct dummy buffers and added uncaptured WebGPU error reporting in src/main.js.
+[2026-02-09 00:50] [IN_PROGRESS] Add a double-click Windows batch script to run local server and open browser.
+[2026-02-09 00:50] [DONE] Added run_local_server.bat for double-click local debug startup and documented it in README.
+[2026-02-09 00:54] [IN_PROGRESS] Replace dye advection with CIP-style advection (gradient + Hermite interpolation) and wire pipeline updates.
+[2026-02-09 00:54] [DONE] Implemented CIP-style dye advection (gradient pass + Hermite interpolation + limiter) and updated docs.
+[2026-02-09 00:56] [IN_PROGRESS] Upgrade advection to full CIP for both velocity and dye (add velocity gradients, new pipelines, and pass rebinding).
+[2026-02-09 01:00] [DONE] Switched full advection path to CIP-style for velocity and dye, updated pipeline bindings, and refreshed docs.
+[2026-02-09 01:04] [IN_PROGRESS] Add wall boundary implementation for cavity flow (no-slip walls + moving lid) and expose controls in HUD.
+[2026-02-09 01:04] [DONE] Implemented cavity wall boundaries (no-slip + moving lid), added HUD controls, and wired wall enforcement passes into the simulation loop.
+[2026-02-09 01:08] [IN_PROGRESS] Make cavity flow self-develop without mouse by adding velocity diffusion and cavity-specific reset fields.
+[2026-02-09 01:10] [DONE] Added velocity diffusion and cavity-specific reset initialization so cavity circulation appears without mouse input.
+[2026-02-09 01:12] [IN_PROGRESS] Add cavity visibility diagnostics (wall overlay + automatic tracer injection) to confirm boundary/lid behavior without mouse.
+[2026-02-09 01:14] [DONE] Added cavity diagnostics: wall overlay in render and automatic tracer injection near moving lid for no-mouse verification.
+[2026-02-09 01:20] [IN_PROGRESS] Align WebGPU simulation timing and acceleration coefficients with Unity constants (DT=1, 12 CFD substeps/frame, pressure gain).
+[2026-02-09 01:20] [DONE] Matched Unity timing constants in WebGPU: fixed DT=1.0, 12 CFD substeps per frame, and pressure acceleration reflected in effective pressure iterations.
+[2026-02-09 01:23] [DONE] Verified cavity flow speed/response after Unity-constant alignment based on user confirmation.
+[2026-02-09 01:23] [IN_PROGRESS] Define gameification strategy from fluid tech demo to playable loop.
+[2026-02-09 01:23] [DONE] Drafted phased strategy for turning the fluid demo into a game-like playable experience.
+[2026-02-09 01:24] [IN_PROGRESS] Save gameification strategy into a handoff text file for the next AI.
+[2026-02-09 01:24] [DONE] Created HANDOFF_STRATEGY.txt with phased gameification plan and next-AI handoff notes.
+[2026-05-07 06:34] [IN_PROGRESS] Rebuild demo as a browser-playable FluidLander 1-2 / 2-1 port using Unity stage data and assets.
+[2026-05-07 06:34] [DONE] Added Unity data/BMP/texture assets, stage parser, BMP decoder, separated fluid buffers, UFO/game logic, Canvas renderer, and regression tests.
+[2026-05-07 15:38] [IN_PROGRESS] Replace heavy CPU reference fluid path with WebGPU compute for Unity-style separated fluid buffers.
+[2026-05-07 15:38] [DONE] Added WebGPU fluid compute shader and FluidGpuSimulation, made GPU the default path, and kept CPU only as fallback.
+[2026-05-07 15:55] [IN_PROGRESS] Fix poor browser FPS caused by defaulting to the full Unity pressure-loop dispatch count.
+[2026-05-07 15:55] [DONE] Changed the default quality to playable WebGPU, kept the full Unity loop as an explicit slow mode, and exposed active fluid mode/dispatch count in the status panel.
+[2026-05-07 16:23] [IN_PROGRESS] Diagnose normal run_local_server.bat FPS drop in the actual browser game page.
+[2026-05-07 16:23] [DONE] Reproduced the normal page through Chrome CDP, capped Canvas backing resolution for high-DPI/4K displays, switched run_local_server.bat to a no-cache 127.0.0.1 server, and restored Unity loop as the default WebGPU quality.
+[2026-05-07 16:46] [DONE] Fixed Canvas UFO rotation sign to match Unity physics direction and added GPU-path visual particles for flow/nozzle visibility without changing gameplay forces.
+[2026-05-07 17:16] [DONE] Moved GPU-path particles into WebGPU, sampling the dynamic YUN/YVN field, fixed buffer binding validation, and verified moving stage/nozzle particles at 60 FPS.

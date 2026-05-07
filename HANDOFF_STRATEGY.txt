@@ -1,0 +1,60 @@
+# HANDOFF_STRATEGY.txt
+
+Last updated: 2026-02-09 01:24
+Project: FluidLanderWebGPUDemo
+
+## 1) Current State
+- WebGPU fluid demo is running.
+- Advection is CIP-style for both velocity and dye.
+- Cavity boundary mode is implemented (no-slip walls + moving lid).
+- Cavity diagnostics are implemented:
+  - wall overlay in render
+  - automatic tracer injection near top lid
+- Timing and coefficients were aligned toward Unity constants:
+  - DT = 1.0
+  - CFD substeps per frame = 12
+  - pressure acceleration reflected via effective pressure iterations
+
+## 2) Goal (Next Phase)
+Turn this technical fluid demo into a playable "game-like" web experience.
+
+## 3) Recommended Strategy (Phased)
+1. Build a vertical slice first.
+   - 60-90 second playable loop:
+   - start -> control -> avoid hazard -> reach goal -> result -> retry
+2. Promote fluid from visual effect to gameplay rule.
+   - Fluid velocity pushes player.
+   - Heat/dye zones act as danger or drag.
+   - Player thrust changes local flow.
+3. Stage system.
+   - Start with one fixed stage.
+   - Add stage mask/walls and 1-2 gimmicks (inflow/outflow or moving wall).
+4. Core game mode focus.
+   - Pick one mode first: time attack OR survival.
+5. Polish and stabilization.
+   - HUD cleanup, score/result, SFX, tuning, performance checks.
+
+## 4) Immediate Next Implementation Order
+1. Add player entity (position, velocity, collision bounds).
+2. Add goal + fail conditions (wall hit, heat overload, timeout).
+3. Couple player motion with sampled fluid velocity field.
+4. Tune one stage until it is consistently playable.
+5. Expand to multiple stages only after step 4 is stable.
+
+## 5) Important Files
+- index.html
+- src/main.js
+- shaders/fluid_compute.wgsl
+- shaders/fluid_render.wgsl
+- README.md
+- EXTRACTION_NOTES.md
+- PROGRESS.txt
+
+## 6) Run / Debug
+- Windows quick start: run_local_server.bat
+- Browser hard reload after shader changes: Ctrl+F5
+
+## 7) Notes For Next AI
+- Keep PROGRESS.txt updated with IN_PROGRESS and DONE entries.
+- Avoid large architecture changes before a playable vertical slice exists.
+- If behavior feels slow/weak, tune gameplay-layer coefficients before changing core solver again.
