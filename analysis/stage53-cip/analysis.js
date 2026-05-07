@@ -8,9 +8,13 @@ import { loadStageData } from "../../src/stageData.js";
 
 const canvas = document.getElementById("gameCanvas");
 const statusEl = document.getElementById("status");
+const simValue = document.getElementById("simValue");
 const elapsedValue = document.getElementById("elapsedValue");
+const frameValue = document.getElementById("frameValue");
 const speedValue = document.getElementById("speedValue");
 const objectValue = document.getElementById("objectValue");
+const stopValue = document.getElementById("stopValue");
+const triggerValue = document.getElementById("triggerValue");
 const topSlitValue = document.getElementById("topSlitValue");
 const maxSpeedValue = document.getElementById("maxSpeedValue");
 const energyValue = document.getElementById("energyValue");
@@ -23,11 +27,16 @@ const STOP_AFTER_MS = 3000;
 const SAMPLE_INTERVAL_MS = 500;
 const AUTO_RESTART_AFTER_MS = 12000;
 const SIDE_EXPLOSION_THRESHOLD = 0.15;
+const FIXED_STOP_FRAME = null;
+const urlParams = new URLSearchParams(window.location.search);
+const TIME_SCALE = Math.max(1, Math.min(50, Number.parseFloat(urlParams.get("timescale") ?? "10") || 10));
 
 const renderer = new GameRenderer(canvas);
 let fluid = null;
 let game = null;
 let replayStart = 0;
+let simElapsed = 0;
+let lastRealNow = 0;
 let lastSample = 0;
 let samplePending = false;
 let samples = [];
@@ -38,6 +47,11 @@ let sideExplosionDetected = false;
 let restarting = false;
 let replayCount = 0;
 let loadingReplay = false;
+let simFrame = 0;
+let speedStopRecord = null;
+let triggerRecord = null;
+let currentReplayRecord = null;
+let replayHistory = [];
 
 function setStatus(text, kind = "") {
   statusEl.className = kind;
@@ -45,7 +59,14 @@ function setStatus(text, kind = "") {
 }
 
 function scenarioScale(elapsedMs) {
+  if (Number.isFinite(FIXED_STOP_FRAME)) {
+    return simFrame < FIXED_STOP_FRAME ? START_SCALE : 0;
+  }
   return elapsedMs < STOP_AFTER_MS ? START_SCALE : 0;
+}
+
+function simElapsedMs() {
+  return simElapsed;
 }
 
 function format(value, digits = 4) {
@@ -88,6 +109,10 @@ function pickTopSide(stats) {
   ), null);
 }
 
+function pickNamedRegion(stats, name) {
+  return stats.find((item) => item.name === name) ?? null;
+}
+
 function appendSampleRow(sample) {
   const row = document.createElement("tr");
   if (sample.top.maxSpeed.value > 0.18) {
@@ -97,6 +122,7 @@ function appendSampleRow(sample) {
   }
   row.innerHTML = `
     <td>${format(sample.elapsed, 1)}</td>
+    <td>${sample.simFrame}</td>
     <td>${format(sample.scale, 2)}</td>
     <td>${sample.top.name}</td>
     <td>${format(sample.top.maxSpeed.value)}</td>
@@ -108,6 +134,51 @@ function appendSampleRow(sample) {
   while (sampleBody.children.length > 20) {
     sampleBody.lastElementChild.remove();
   }
+}
+
+function makeSpeedStopRecord(elapsedMs) {
+  const obj = game?.stage?.moveObjects?.[0];
+  return {
+    replay: replayCount,
+    simFrame,
+    elapsed: elapsedMs / 1000,
+    elapsedMs,
+    objectX: obj?.x ?? 0,
+    objectY: obj?.y ?? 0,
+    objectCnt: obj?.cnt ?? 0,
+    runtimeSpdY: obj?.runtimeSpdY ?? obj?.spdY ?? 0,
+    mode: Number.isFinite(FIXED_STOP_FRAME) ? "fixed-replay" : "wall-clock",
+  };
+}
+
+function cloneSideRecord(record) {
+  return record ? structuredClone(record) : null;
+}
+
+function updateReplayRecord(sample) {
+  if (!currentReplayRecord) {
+    return;
+  }
+  currentReplayRecord.sampleCount = samples.length;
+  currentReplayRecord.latestElapsed = sample.elapsed;
+  currentReplayRecord.stop = speedStopRecord;
+  currentReplayRecord.maxTop = Math.max(currentReplayRecord.maxTop, sample.top.maxSpeed.value);
+  currentReplayRecord.maxLeftTip = Math.max(currentReplayRecord.maxLeftTip, sample.leftSide?.maxSpeed.value ?? 0);
+  currentReplayRecord.maxRightTip = Math.max(currentReplayRecord.maxRightTip, sample.rightSide?.maxSpeed.value ?? 0);
+  currentReplayRecord.peakSide = cloneSideRecord(peakSide);
+  currentReplayRecord.trigger = triggerRecord;
+}
+
+function makeTriggerRecord(elapsedMs, side) {
+  return {
+    replay: replayCount,
+    simFrame,
+    elapsed: elapsedMs / 1000,
+    elapsedMs,
+    stop: speedStopRecord,
+    peakSide: cloneSideRecord(side),
+    peakSpeed: side?.maxSpeed.value ?? 0,
+  };
 }
 
 async function sampleFluid(elapsedMs, scale) {
@@ -123,20 +194,32 @@ async function sampleFluid(elapsedMs, scale) {
     }
     latestTop = top;
     latestSide = pickTopSide(stats);
+    const leftSide = pickNamedRegion(stats, "leftTip");
+    const rightSide = pickNamedRegion(stats, "rightTip");
     if ((latestSide?.maxSpeed.value ?? 0) > (peakSide?.maxSpeed.value ?? -Infinity)) {
       peakSide = structuredClone(latestSide);
     }
     if ((peakSide?.maxSpeed.value ?? 0) >= SIDE_EXPLOSION_THRESHOLD) {
       sideExplosionDetected = true;
+      if (!triggerRecord) {
+        triggerRecord = makeTriggerRecord(elapsedMs, peakSide);
+      }
     }
     const sample = {
+      replay: replayCount,
+      simFrame,
       elapsed: elapsedMs / 1000,
       scale,
       objectY: game.stage.moveObjects[0]?.y ?? 0,
       top,
       side: latestSide,
+      leftSide,
+      rightSide,
+      stop: speedStopRecord,
+      trigger: triggerRecord,
     };
     samples.push(sample);
+    updateReplayRecord(sample);
     appendSampleRow(sample);
   } finally {
     samplePending = false;
@@ -145,9 +228,17 @@ async function sampleFluid(elapsedMs, scale) {
 
 function updatePanel(elapsedMs, scale) {
   const obj = game?.stage?.moveObjects?.[0];
+  simValue.textContent = `time x${TIME_SCALE}`;
   elapsedValue.textContent = `${(elapsedMs / 1000).toFixed(2)}s`;
+  frameValue.textContent = `${simFrame}`;
   speedValue.textContent = `${scale.toFixed(2)}x`;
   objectValue.textContent = obj ? `${obj.x.toFixed(1)}, ${obj.y.toFixed(1)}` : "--";
+  stopValue.textContent = speedStopRecord
+    ? `f${speedStopRecord.simFrame} y${format(speedStopRecord.objectY, 2)} cnt${speedStopRecord.objectCnt}`
+    : "--";
+  triggerValue.textContent = triggerRecord
+    ? `f${triggerRecord.simFrame} ${triggerRecord.peakSide?.name ?? "--"}:${format(triggerRecord.peakSpeed)}`
+    : "--";
   if (latestTop) {
     const sideText = latestSide ? ` side ${latestSide.name}:${format(latestSide.maxSpeed.value)}` : "";
     topSlitValue.textContent = `${latestTop.name} @ ${latestTop.maxSpeed.x},${latestTop.maxSpeed.y}${sideText}`;
@@ -196,9 +287,19 @@ function drawAnalysisOverlay() {
 
 function csvText() {
   const header = [
+    "replay",
+    "simFrame",
     "elapsed",
     "scale",
     "objectY",
+    "speedStopFrame",
+    "speedStopElapsedMs",
+    "stopObjectY",
+    "stopObjectCnt",
+    "stopRuntimeSpdY",
+    "triggerFrame",
+    "triggerSide",
+    "triggerSpeed",
     "slit",
     "maxSpeed",
     "maxSpeedX",
@@ -212,9 +313,19 @@ function csvText() {
     "meanEnergy",
   ];
   const lines = samples.map((sample) => [
+    sample.replay,
+    sample.simFrame,
     sample.elapsed,
     sample.scale,
     sample.objectY,
+    sample.stop?.simFrame ?? "",
+    sample.stop?.elapsedMs ?? "",
+    sample.stop?.objectY ?? "",
+    sample.stop?.objectCnt ?? "",
+    sample.stop?.runtimeSpdY ?? "",
+    sample.trigger?.simFrame ?? "",
+    sample.trigger?.peakSide?.name ?? "",
+    sample.trigger?.peakSpeed ?? "",
     sample.top.name,
     sample.top.maxSpeed.value,
     sample.top.maxSpeed.x,
@@ -261,6 +372,8 @@ async function restartReplay() {
   latestSide = null;
   peakSide = null;
   sideExplosionDetected = false;
+  speedStopRecord = null;
+  triggerRecord = null;
   sampleBody.textContent = "";
   loadingReplay = true;
   try {
@@ -277,9 +390,24 @@ async function restartReplay() {
     removeUfoFromAnalysis();
     game.stage.moveObjectSpeedScale = START_SCALE;
     replayStart = performance.now();
+    lastRealNow = replayStart;
+    simElapsed = 0;
     lastSample = 0;
     replayCount += 1;
-    setStatus("Replay running.\nMoveobject speed: 0.5x for the first 3 seconds, then fixed at 0.0x.\nIf left/right side speed stays below 0.15 for 12s, replay restarts automatically.");
+    simFrame = 0;
+    currentReplayRecord = {
+      replay: replayCount,
+      mode: Number.isFinite(FIXED_STOP_FRAME) ? "fixed-replay" : "wall-clock",
+      maxTop: 0,
+      maxLeftTip: 0,
+      maxRightTip: 0,
+      sampleCount: 0,
+      stop: null,
+      trigger: null,
+      peakSide: null,
+    };
+    replayHistory.push(currentReplayRecord);
+    setStatus(`Replay running.\nMoveobject speed: 0.5x for the first 3 simulated seconds, then fixed at 0.0x.\nSimulation time scale is x${TIME_SCALE}.\nIf left/right side speed stays below 0.15 for 12 simulated seconds, replay restarts automatically.`);
     restarting = false;
   } finally {
     loadingReplay = false;
@@ -291,10 +419,13 @@ function frame(now) {
   if (loadingReplay || !game || !fluid) {
     return;
   }
-  const elapsedMs = now - replayStart;
+  const realDelta = Math.max(0, now - lastRealNow);
+  lastRealNow = now;
+  simElapsed += realDelta * TIME_SCALE;
+  const elapsedMs = simElapsedMs();
   if (!restarting && elapsedMs >= AUTO_RESTART_AFTER_MS && !sideExplosionDetected) {
     restarting = true;
-    setStatus("No side explosion by 12s. Restarting replay...");
+    setStatus("No side explosion by 12 simulated seconds. Restarting replay...");
     restartReplay().catch((error) => {
       console.error(error);
       setStatus(error.message, "bad");
@@ -302,6 +433,12 @@ function frame(now) {
     return;
   }
   const scale = scenarioScale(elapsedMs);
+  if (scale === 0 && !speedStopRecord) {
+    speedStopRecord = makeSpeedStopRecord(elapsedMs);
+    if (currentReplayRecord) {
+      currentReplayRecord.stop = speedStopRecord;
+    }
+  }
   game.stage.moveObjectSpeedScale = scale;
   for (const obj of game.stage.moveObjects ?? []) {
     updateMoveObject(obj, scale);
@@ -315,6 +452,7 @@ function frame(now) {
     lastSample = elapsedMs;
     sampleFluid(elapsedMs, scale);
   }
+  simFrame += 1;
 }
 
 restartBtn.addEventListener("click", () => {
@@ -333,9 +471,17 @@ window.__stage53AnalysisDebug = {
       latestTop,
       latestSide,
       peakSide,
+      speedStopRecord,
+      triggerRecord,
+      replayHistory,
+      simFrame,
+      mode: Number.isFinite(FIXED_STOP_FRAME) ? "fixed-replay" : "wall-clock",
+      fixedStopFrame: FIXED_STOP_FRAME,
+      timeScale: TIME_SCALE,
       sampleCount: samples.length,
       samples,
-      elapsed: replayStart ? (performance.now() - replayStart) / 1000 : 0,
+      elapsed: simElapsedMs() / 1000,
+      realElapsed: replayStart ? (performance.now() - replayStart) / 1000 : 0,
     };
   },
 };
