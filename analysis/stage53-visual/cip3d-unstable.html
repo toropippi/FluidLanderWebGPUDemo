@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:," />
+  <title>3D CIP old / limit 1 / no RHS clamp</title>
+  <style>
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      background: #101823;
+      color: #f3f8ff;
+      font: 14px "Segoe UI", "Yu Gothic", Meiryo, sans-serif;
+    }
+
+    a {
+      color: #9ecbff;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <p>Opening 3D CIP: old degenerate, limit 1.0, no RHS clamp...</p>
+    <p><a id="fallback" href="../../webgpu-3d-cip/">Open manually</a></p>
+  </main>
+  <script>
+    const target = new URL("../../webgpu-3d-cip/", window.location.href);
+    target.searchParams.set("degenerate", "old");
+    target.searchParams.set("limit", "1");
+    target.searchParams.set("rhsClamp", "0");
+    target.searchParams.set("pressure", "16");
+    target.searchParams.set("steps", "8");
+    target.searchParams.set("size", "1.5");
+    target.searchParams.set("zoom", "1");
+    target.searchParams.set("yaw", "0");
+    target.searchParams.set("v", String(Date.now()));
+    document.getElementById("fallback").href = target.href;
+    window.location.replace(target.href);
+  </script>
+</body>
+</html>

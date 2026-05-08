@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:," />
+  <title>Stable WebGPU 3D CIP</title>
+  <style>
+    :root {
+      --bg: #78a9ee;
+      --panel: rgba(17, 24, 32, 0.72);
+      --line: rgba(255, 255, 255, 0.18);
+      --text: #f6f9fc;
+      --muted: #b9c5d1;
+      --accent: #a6d2ff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "Yu Gothic", Meiryo, sans-serif;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: var(--bg);
+    }
+
+    #hud {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      width: min(330px, calc(100vw - 24px));
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      backdrop-filter: blur(8px);
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.22);
+      font-size: 13px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      color: var(--accent);
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 5px 14px;
+      color: var(--muted);
+    }
+
+    .stats strong {
+      color: var(--text);
+      font-weight: 650;
+      text-align: right;
+    }
+
+    .controls {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 74px 1fr 42px;
+      gap: 8px;
+      align-items: center;
+      color: var(--muted);
+    }
+
+    button {
+      min-height: 32px;
+      border: 1px solid rgba(255, 255, 255, 0.24);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.10);
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
+
+    input[type="range"] {
+      width: 100%;
+    }
+
+    #energyChart {
+      width: 100%;
+      height: 78px;
+      margin-top: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 6px;
+      background: rgba(2, 6, 10, 0.24);
+    }
+
+    #status {
+      position: absolute;
+      right: 12px;
+      bottom: 12px;
+      max-width: min(680px, calc(100vw - 24px));
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 13px;
+      white-space: pre-line;
+    }
+
+    .hidden {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="view"></canvas>
+  <aside id="hud">
+    <h1>Stable WebGPU 3D CIP</h1>
+    <div class="stats">
+      <span>CFD frame</span><strong id="frameValue">0</strong>
+      <span>FPS</span><strong id="fpsValue">--</strong>
+      <span>Cells</span><strong>32^3</strong>
+      <span>Steps</span><strong>8 fixed</strong>
+      <span>Pressure</span><strong>32 fixed</strong>
+      <span>Limit</span><strong>CIP 1.0</strong>
+      <span>Degenerate</span><strong>repair</strong>
+      <span>Gas release</span><strong>off</strong>
+      <span>Energy</span><strong id="energyValue">--</strong>
+      <span>Max speed</span><strong id="maxSpeedValue">--</strong>
+      <span>Div RMS</span><strong id="divValue">--</strong>
+      <span>Warmup</span><strong id="warmupValue">on</strong>
+    </div>
+    <div class="controls">
+      <button id="toggleButton" type="button">Pause</button>
+      <button id="resetButton" type="button">Reset</button>
+      <div class="row">
+        <label for="pointSize">size</label>
+        <input id="pointSize" type="range" min="0.5" max="3.5" step="0.1" value="1.4" />
+        <output id="pointSizeValue">1.4</output>
+      </div>
+      <div class="row">
+        <label for="zoom">zoom</label>
+        <input id="zoom" type="range" min="0.7" max="2.2" step="0.05" value="1.0" />
+        <output id="zoomValue">1.0</output>
+      </div>
+      <div class="row">
+        <label for="yaw">yaw</label>
+        <input id="yaw" type="range" min="-90" max="90" step="1" value="0" />
+        <output id="yawValue">0</output>
+      </div>
+    </div>
+    <canvas id="energyChart" width="300" height="78"></canvas>
+  </aside>
+  <div id="status">Initializing WebGPU...</div>
+  <script type="module" src="./stable3d.js"></script>
+</body>
+</html>

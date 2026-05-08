@@ -47,3 +47,18 @@ Current log:
 [2026-05-07 16:23] [DONE] Reproduced the normal page through Chrome CDP, capped Canvas backing resolution for high-DPI/4K displays, switched run_local_server.bat to a no-cache 127.0.0.1 server, and restored Unity loop as the default WebGPU quality.
 [2026-05-07 16:46] [DONE] Fixed Canvas UFO rotation sign to match Unity physics direction and added GPU-path visual particles for flow/nozzle visibility without changing gameplay forces.
 [2026-05-07 17:16] [DONE] Moved GPU-path particles into WebGPU, sampling the dynamic YUN/YVN field, fixed buffer binding validation, and verified moving stage/nozzle particles at 60 FPS.
+[2026-05-08 04:17] [IN_PROGRESS] Start WebGPU 3D CIP standalone port from stable Unity shader
+[2026-05-08 04:23] [DONE] Added standalone WebGPU 3D CIP port scaffold and runtime files
+[2026-05-08 04:30] [DONE] Fixed WebGPU 3D CIP initial visibility: lighter startup, x-y camera mapping, async shader errors
+[2026-05-08 04:34] [DONE] Debugged WebGPU 3D CIP blank page: fixed WGSL reserved word and same-buffer copy
+[2026-05-08 04:35] [DONE] Adjusted WebGPU 3D CIP camera toward Unity view scale
+[2026-05-08 04:37] [DONE] Added reset button to WebGPU 3D CIP page
+[2026-05-08 04:40] [DONE] Added WebGPU gas release and restored pressure default after divergence report
+[2026-05-08 04:45] [DONE] Added WebGPU 3D CIP energy and divergence HUD trace
+[2026-05-08 04:55] [DONE] Reproduced steps=8 divergence and stabilized WebGPU 3D CIP with RHS speed clamp
+[2026-05-08 05:01] [IN_PROGRESS] Verify WebGPU 3D CIP against Unity differences and run 15000/3000 frame stability acceptance tests
+[2026-05-08 05:08] [DONE] Passed WebGPU 3D CIP stability acceptance: 15000 frame pressure=64 run and five 3000 frame pressure=16 runs
+[2026-05-08 13:36] [IN_PROGRESS] Test WebGPU 3D CIP behavior with RHS speed clamp temporarily removed
+[2026-05-08 13:38] [DONE] Confirmed no-clamp WebGPU 3D CIP diverges at frame 4904 under steps=8 pressure=64 and restored clamp
+[2026-05-08 13:54] [IN_PROGRESS] Diagnose WebGPU 3D CIP no-RHS-clamp divergence with pressure/RHS GPU stats
+[2026-05-08 14:05] [DONE] Added rhsClamp=0 diagnostic mode and found no-clamp instability starts at CIP output before pressure, then pressure/RHS amplifies the feedback
